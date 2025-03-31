@@ -34,7 +34,7 @@ wifi:
 
   # Enable fallback hotspot (captive portal) in case wifi connection fails
   ap:
-    ssid: ""
+    ssid: "Esp32-Powermeter"
     password: ""
 
 captive_portal:
@@ -49,7 +49,7 @@ uart:
 time:
   - platform: homeassistant
     id: homeassistant_time
-      
+
 #### PZEM-004T V3 ####
 sensor:
   - platform: pzemac
@@ -93,9 +93,71 @@ sensor:
     power_id: p_energy
     id: total_dialy_energy
 
+  - platform: template
+    name: "Electricity Cost (Day)"
+    unit_of_measurement: "THB"
+    accuracy_decimals: 2
+    lambda: |-
+      return id(p_energy).state * 4.70;
+    update_interval: 5s
+  
+  - platform: template
+    name: "Electricity Cost (Total)"
+    unit_of_measurement: "THB"
+    accuracy_decimals: 2
+    lambda: |-
+      return id(total_dialy_energy).state * 4.70;
+    update_interval: 5s
+
+  - platform: template
+    name: "Total Monthly Energy"
+    unit_of_measurement: kWh
+    accuracy_decimals: 4
+    id: total_monthly_energy
+    lambda: |-
+      static float last_month_energy = 0;
+      static int last_month = -1;
+      int current_month = id(homeassistant_time).now().month;
+      if (last_month != current_month) {
+        last_month_energy = 0;
+      }
+      last_month = current_month;
+      return last_month_energy += id(p_energy).state;
+
+  - platform: template
+    name: "Total Yearly Energy"
+    unit_of_measurement: kWh
+    accuracy_decimals: 4
+    id: total_yearly_energy
+    lambda: |-
+      static float last_year_energy = 0;
+      static int last_year = -1;
+      int current_year = id(homeassistant_time).now().year;
+      if (last_year != current_year) {
+        last_year_energy = 0;
+      }
+      last_year = current_year;
+      return last_year_energy += id(p_energy).state;
+
+  - platform: template
+    name: "Electricity Cost (Monthly)"
+    unit_of_measurement: "THB"
+    accuracy_decimals: 2
+    lambda: |-
+      return id(total_monthly_energy).state * 4.70;
+    update_interval: 5s
+
+  - platform: template
+    name: "Electricity Cost (Yearly)"
+    unit_of_measurement: "THB"
+    accuracy_decimals: 2
+    lambda: |-
+      return id(total_yearly_energy).state * 4.70;
+    update_interval: 5s
+
   - platform: wifi_signal
     name: "WiFi power_pMeter"
-    update_interval: 10s
+    update_interval: 60s
     
   - platform: uptime
     name: "up"
@@ -119,16 +181,61 @@ text_sensor:
       return { (String(days) +"d " + String(hours) +"h " + String(minutes) +"m "+ String(seconds) +"s").c_str() };
     icon: mdi:clock-start
     update_interval: 60s
-  
+
 switch:
   - platform: restart
-    name: "pMeter_restart"
+    name: "EMeter_restart"
+    
+  - platform: uart
+    name: "EMeter Reset Energy"
+    data: [0x01, 0x42, 0x80, 0x11]
+
+http_request:
+  useragent: esphome/device
+  timeout: 10s
+  verify_ssl: false
 
 button:
   - platform: template
     name: "Reset Energy"
     on_press:
       - pzemac.reset_energy: pzemac_1
+  
+  - platform: template
+    name: "Send Telegram message"
+    on_press:
+      - http_request.post:
+          url: ""
+          headers:
+            Content-Type: application/json
+          json:
+            chat_id: ""
+            text: !lambda |
+              #include <time.h>
+              time_t now_time;
+              ::time(&now_time); // ใช้ :: เพื่อระบุ namespace global
+              struct tm *time_info;
+              time_info = localtime(&now_time);
+
+              char buffer[256]; // ปรับขนาด buffer ตามต้องการ
+              sprintf(buffer, 
+                "Power Meter Status:\n"
+                "  Date: %02d/%02d/%04d\n"
+                "  Time: %02d:%02d:%02d\n"
+                "  Volt: %.2f V\n"
+                "  Amp:  %.2f A\n"
+                "  Watt: %.2f W\n"
+                "  Freq: %.2f Hz\n"
+                "  KWh:  %.4f KWh\n"
+                "  PF:   %.2f\n"
+                "  Cost (Today): %.2f THB",
+                time_info->tm_mday, time_info->tm_mon + 1, time_info->tm_year + 1900,
+                time_info->tm_hour, time_info->tm_min, time_info->tm_sec,
+                id(p_voltage).state, id(p_current).state, id(p_watt).state,
+                id(p_frequency).state, id(p_energy).state, id(p_power_factory).state,
+                id(p_energy).state * 4.70
+              );
+              return buffer;
 
 i2c:
   sda: GPIO21
